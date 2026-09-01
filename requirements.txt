@@ -1,0 +1,4 @@
+dotenv
+requests
+pandas
+opencv-python

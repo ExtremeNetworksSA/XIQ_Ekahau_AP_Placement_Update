@@ -21,8 +21,8 @@ PATH = current_dir
 class Ekahau:
     def __init__(self, filename, XiqNativeImport): 
         self.filename = filename
-        self.x_scale = 1
-        self.y_scale = 1
+        self.x_scale = {}
+        self.y_scale = {}
         if XiqNativeImport:
             self.cropRotateSupport = False
             self.serialInTags = True
@@ -145,16 +145,18 @@ class Ekahau:
             self.floorPlans_df = self.floorPlans_df.assign(cropMaxY = lambda x: x.height)
 
 
-    def __floorImageProcessing(self, imageId, imageType):
+    def __floorImageProcessing(self, floor_id, imageId, imageType):
 
         if imageType == 'bitmap':
-            filt = self.floorPlans_df['bitmapImageId'] == imageId    
+            filt = self.floorPlans_df['bitmapImageId'] == imageId
         else:
             filt = self.floorPlans_df['imageId'] == imageId
         rawWidth = int(self.images_df.loc[imageId, 'resolutionWidth'])
         rawHeight = int(self.images_df.loc[imageId, 'resolutionHeight'])
-        self.x_scale = rawWidth / int(self.floorPlans_df.loc[filt, 'width'].values[0])
-        self.y_scale = rawHeight / int(self.floorPlans_df.loc[filt, 'height'].values[0])
+        x_scale = rawWidth / int(self.floorPlans_df.loc[filt, 'width'].values[0])
+        y_scale = rawHeight / int(self.floorPlans_df.loc[filt, 'height'].values[0])
+        self.x_scale[floor_id] = x_scale
+        self.y_scale[floor_id] = y_scale
 
         floorName = self.floorPlans_df.loc[filt, 'name'].values[0]
         imageFormat = (self.images_df.loc[imageId, 'imageFormat'])
@@ -193,10 +195,10 @@ class Ekahau:
        
         #Cropping image as necessary
         if self.cropRotateSupport:
-            minX=int(int(self.floorPlans_df.loc[filt, 'cropMinX'].values[0]) * self.x_scale)
-            minY=int(int(self.floorPlans_df.loc[filt, 'cropMinY'].values[0]) * self.y_scale)
-            maxX=int(int(self.floorPlans_df.loc[filt, 'cropMaxX'].values[0]) * self.x_scale)
-            maxY=int(int(self.floorPlans_df.loc[filt, 'cropMaxY'].values[0]) * self.y_scale)
+            minX=int(int(self.floorPlans_df.loc[filt, 'cropMinX'].values[0]) * x_scale)
+            minY=int(int(self.floorPlans_df.loc[filt, 'cropMinY'].values[0]) * y_scale)
+            maxX=int(int(self.floorPlans_df.loc[filt, 'cropMaxX'].values[0]) * x_scale)
+            maxY=int(int(self.floorPlans_df.loc[filt, 'cropMaxY'].values[0]) * y_scale)
             #print(minY,maxY, minX,maxX)
             crop_image = image[minY:maxY, minX:maxX]
         
@@ -216,35 +218,33 @@ class Ekahau:
                 image = crop_image
         else:
             # ignore Ekahau cropping and rotation and just use the raw image
-            width = rawWidth * self.floorPlans_df.loc[filt, 'metersPerUnit'].values[0]
-            height = rawHeight * self.floorPlans_df.loc[filt, 'metersPerUnit'].values[0]
-        
+            metersPerUnit = self.__nativeMetersPerUnit(self.floorPlans_df.loc[filt, 'metersPerUnit'].values[0])
+            width = rawWidth * metersPerUnit
+            height = rawHeight * metersPerUnit
 
-        #write file with crop and rotation if applicable
-        write_status = cv2.imwrite(newfilename, image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not write_status:
-            log_msg = f"Failed to write {newfilename} after cropping"
-            logger.error(log_msg)
-            raise ValueError(log_msg)
-        
-        file_size = os.path.getsize(newfilename)
-        if file_size > 10000000:
-            floorplan_name = 'FILE_TOO_BIG_' + floorplan_name
         return floorplan_name, width, height
+
+    def __nativeMetersPerUnit(self, metersPerUnit):
+        # XIQ's native .esx import rounds Ekahau's pixels-per-meter to the nearest
+        # whole number when it establishes a floor's scale, so AP coordinates must
+        # be computed against that same rounded scale to line up with the floor.
+        return 1 / round(1 / metersPerUnit)
 
     def __updateAPCoord(self, floor_id, rawX,rawY):
         #get correct x,y coords
+        x_scale = self.x_scale[floor_id]
+        y_scale = self.y_scale[floor_id]
         ## If crop rotate support is enabled
         if self.cropRotateSupport:
-            minX=int(int(self.floorPlans_df.loc[floor_id, 'cropMinX']) * self.x_scale)
-            minY=int(int(self.floorPlans_df.loc[floor_id, 'cropMinY']) * self.y_scale)
-            maxX=int(int(self.floorPlans_df.loc[floor_id, 'cropMaxX']) * self.x_scale)
-            maxY=int(int(self.floorPlans_df.loc[floor_id, 'cropMaxY']) * self.y_scale)
+            minX=int(int(self.floorPlans_df.loc[floor_id, 'cropMinX']) * x_scale)
+            minY=int(int(self.floorPlans_df.loc[floor_id, 'cropMinY']) * y_scale)
+            maxX=int(int(self.floorPlans_df.loc[floor_id, 'cropMaxX']) * x_scale)
+            maxY=int(int(self.floorPlans_df.loc[floor_id, 'cropMaxY']) * y_scale)
 
             metersPerUnit = self.floorPlans_df.loc[floor_id, 'metersPerUnit']
             orientation = self.floorPlans_df.loc[floor_id, 'rotateUpDirection']
-            rawX = rawX  * self.x_scale
-            rawY = rawY  * self.y_scale
+            rawX = rawX  * x_scale
+            rawY = rawY  * y_scale
 
             if orientation == 'UP':
                 x = (rawX - minX) * metersPerUnit
@@ -262,9 +262,11 @@ class Ekahau:
         else:
             minX= 0
             minY= 0
-            maxX=int(self.floorPlans_df.loc[floor_id, 'width'] * self.x_scale)
-            maxY=int(self.floorPlans_df.loc[floor_id, 'height'] * self.y_scale)
-            metersPerUnit = self.floorPlans_df.loc[floor_id, 'metersPerUnit']
+            maxX=int(self.floorPlans_df.loc[floor_id, 'width'] * x_scale)
+            maxY=int(self.floorPlans_df.loc[floor_id, 'height'] * y_scale)
+            metersPerUnit = self.__nativeMetersPerUnit(self.floorPlans_df.loc[floor_id, 'metersPerUnit'])
+            rawX = rawX * x_scale
+            rawY = rawY * y_scale
             x = (rawX - minX) * metersPerUnit
             y = (rawY - minY) * metersPerUnit
         return x,y
@@ -318,7 +320,7 @@ class Ekahau:
             else:
                 imageType = 'regular'
                 imageId = row['imageId']
-            floorImageName, width, height = self.__floorImageProcessing(imageId, imageType)
+            floorImageName, width, height = self.__floorImageProcessing(floor_id, imageId, imageType)
 
             #Floor Payload
             data = {

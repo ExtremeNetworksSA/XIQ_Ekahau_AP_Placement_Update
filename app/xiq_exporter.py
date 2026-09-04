@@ -193,7 +193,13 @@ class XIQ:
             else:
                 if 'error_message' in data:
                     logger.warning(f"\t\t{data['error_message']}")
+                    # Don't retry on authentication errors (401)
+                    if response.status_code == 401:
+                        raise APICallFailedException(data['error_message'])
                     raise APICallRetryException(data['error_message'])
+            # Don't retry on authentication errors (401)
+            if response.status_code == 401:
+                raise APICallFailedException(log_msg)
             raise APICallRetryException(log_msg)
         try:
             data = response.json()

@@ -13,7 +13,6 @@ from app.ap_csv_importer import apSerialCSV
 from app.mapImportLogger import logger
 from app.xiq_exporter import XIQ, APICallFailedException
 current_dir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
-logger = logging.getLogger('AP_Placement.Main')
 
         
 parser = argparse.ArgumentParser()
@@ -220,7 +219,7 @@ def main():
 
     ## If not in Ekahau or no match found in XIQ, select from list of existing buildings
     if ekahau_building_exists == False or xiq_building_exist == False:
-        selection = selectFromDataFrame(building_df, "\nWhich Building would you like to import the floor plan and APs too?")
+        selection = selectFromDataFrame(building_df, "\nWhich Building would you like to check AP locations for?")
         xiq_building_id = (building_df.loc[int(selection),'id'])
         xiq_building_name = (building_df.loc[int(selection),'name'])
     print(f"AP locations will be validated for Building {xiq_building_name}")
@@ -229,14 +228,21 @@ def main():
     floors_df = x.gatherFloors(xiq_building_id)
 
     for floor in rawData['floors']:
+        print("Checking floor " + floor['name'] + ".... ")
+        sys.stdout.flush()
         floor_name = floor['name']
         if floor_name in floors_df['name'].unique():
             floor['xiq_floor_id'] = floors_df.loc[floors_df['name'] == floor_name, 'id'].values[0]
-            log_msg = (f"Floor {floor_name} was found in XIQ. Will add APs to this floor")
+            log_msg = (f"Floor {floor_name} was found in XIQ. Will check APs to this floor")
             logger.info(log_msg)
         else:
-            log_msg = (f"Floor {floor_name} was not found in XIQ.")
-            print("Script is exiting...")
+            log_msg = (f"Floor {floor_name} was not found in XIQ under building {xiq_building_name}.")
+            logger.warning(log_msg)
+            sys.stdout.write(YELLOW)
+            sys.stdout.write("\n"+log_msg + '\n')
+            sys.stdout.write("Please make sure the floor name in the Ekahau project matches the floor name in XIQ and try again.")
+            sys.stdout.write("Script is exiting...")
+            sys.stdout.write(RESET)
             sys.exit(1)
 
     ## Get new locations of APs
@@ -279,6 +285,7 @@ def main():
         sys.stdout.write("\n"+log_msg + '\n')
         print("script is exiting....")
         sys.stdout.write(RESET)
+        sys.stdout.flush()
         sys.exit(1)
     # remove APs that do not have serial numbers
     elif nanValues.name.size > 0:
@@ -300,10 +307,14 @@ def main():
         filt = ap_df['serial_number'] == ap_info['sn']
         if not ap_df.loc[filt].empty:
             xiq_location_id = (ap_df.loc[filt,'location_id'].values[0])
-            if str(ap_info['location_id']) != str(xiq_location_id):
+            location_changed = str(ap_info['location_id']) != str(xiq_location_id)
+            xy_changed = (not np.isclose(ap_info['x'], ap_df.loc[filt,'x'].values[0], atol=1e-6)
+                          or not np.isclose(ap_info['y'], ap_df.loc[filt,'y'].values[0], atol=1e-6))
+            if location_changed:
                 print(f"AP {ap_info['name']} was moved from {xiq_location_id} to {ap_info['location_id']}")
-            if ap_info['x'] != ap_df.loc[filt,'x'].values[0] or ap_info['y'] != ap_df.loc[filt,'y'].values[0]:
+            if xy_changed:
                 print(f"AP {ap_info['name']} was moved from ({ap_df.loc[filt,'x'].values[0]}, {ap_df.loc[filt,'y'].values[0]}) to ({ap_info['x']}, {ap_info['y']})")
+            if location_changed or xy_changed:
                 update_list.append({
                     'id': ap_df.loc[filt,'id'].values[0], 'name': ap_info['name'], 'serial_number': ap_info['sn'],
                     'location_id': ap_info['location_id'], 'x': ap_info['x'], 'y': ap_info['y'],
@@ -338,14 +349,20 @@ def main():
             try:
                 x.updateAPLocation(ap_update_location['id'], ap_update_location['name'], ap_data)
                 success_count += 1
+                logger.info(f"Updated AP {ap_update_location['name']} (Serial Number: {ap_update_location['serial_number']}) to location_id {ap_update_location['location_id']}, x={ap_update_location['x']}, y={ap_update_location['y']}")
             except APICallFailedException as e:
                  failure_list.append(ap_update_location['name'])
                  log_msg = f"Failed to update AP {ap_update_location['name']} with Serial Number {ap_update_location['serial_number']}: {e}"
+                 logger.error(log_msg)
                  print(log_msg)
                  continue
 
-        print(f"\n{success_count} of {len(update_list)} APs updated successfully.")
+        log_msg = f"{success_count} of {len(update_list)} APs updated successfully."
+        print(f"\n{log_msg}")
+        logger.info(log_msg)
         if failure_list:
+            log_msg = "These APs failed to update: " + ", ".join(failure_list)
+            logger.warning(log_msg)
             sys.stdout.write(YELLOW)
             print("These APs failed to update:\n  " + "\n  ".join(failure_list))
             sys.stdout.write(RESET)
